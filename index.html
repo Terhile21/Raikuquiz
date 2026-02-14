@@ -1,13 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script>
-  const SUPABASE_URL = 'https://bsoakiekkdsrrcmjwppy.supabase.co'
-  const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJzb2FraWVra2RzcnJjbWp3cHB5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzA5NzQxMTMsImV4cCI6MjA4NjU1MDExM30.iv1NwmJnhFjRTJgKvP1Vp3CD4I3Hr0o44YlftU76syA'
-  const { createClient } = window.supabase
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY)
-</script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Raiku Quiz - Test Your Knowledge</title>
@@ -617,9 +610,27 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY)
         </div>
     </div>
 
+    <div id="dbStatus" style="position:fixed;bottom:60px;left:50%;transform:translateX(-50%);font-size:0.75em;padding:4px 12px;border-radius:20px;z-index:1000;background:rgba(190,242,2,0.1);color:#BEF202;border:1px solid rgba(190,242,2,0.3);">⟳ connecting...</div>
     <a href="#" class="admin-link" onclick="showAdminLogin(); return false;">⚙️</a>
 
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script>
+        // Supabase client (initialized after CDN loads)
+        let supabase = null;
+
+        function initSupabase() {
+            try {
+                const { createClient } = window.supabase;
+                supabase = createClient(
+                    'https://bsoakiekkdsrrcmjwppy.supabase.co',
+                    'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJzb2FraWVra2RzcnJjbWp3cHB5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzA5NzQxMTMsImV4cCI6MjA4NjU1MDExM30.iv1NwmJnhFjRTJgKvP1Vp3CD4I3Hr0o44YlftU76syA'
+                );
+                console.log('Supabase ready');
+            } catch(e) {
+                console.error('Supabase init failed:', e);
+            }
+        }
+
         // Quiz state
         let currentPlayer = '';
         let currentQuestionIndex = 0;
@@ -695,6 +706,7 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY)
         function startTimer() {
             quizStartTime = Date.now();
             const timerEl = document.getElementById('quizTimer');
+            if (timerInterval) clearInterval(timerInterval);
             timerInterval = setInterval(() => {
                 const elapsed = Math.floor((Date.now() - quizStartTime) / 1000);
                 const minutes = Math.floor(elapsed / 60);
@@ -702,6 +714,7 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY)
                 timerEl.textContent = `${minutes}:${seconds.toString().padStart(2, '0')}`;
             }, 1000);
         }
+        
 
         function stopTimer() {
             if (timerInterval) {
@@ -1066,29 +1079,44 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY)
 
         // Load from persistent storage
         async function init() {
+            initSupabase();
+            document.getElementById('dbStatus').textContent = '⟳ connecting...';
             await loadPersistentData();
             loadLocalData();
             displaySavedName();
             updateLeaderboard('welcomeLeaderboardList');
+            const dbEl = document.getElementById('dbStatus');
+            if (supabase && scores.length >= 0) {
+                dbEl.textContent = '🟢 DB connected';
+                dbEl.style.color = '#BEF202';
+            } else {
+                dbEl.textContent = '🔴 DB offline';
+                dbEl.style.background = 'rgba(255,68,68,0.1)';
+                dbEl.style.color = '#ff6666';
+                dbEl.style.borderColor = 'rgba(255,68,68,0.3)';
+            }
         }
 
         async function loadPersistentData() {
-    try {
-        const { data: scoresData } = await supabase.from('scores').select('*').order('score', { ascending: false }).limit(100);
-        if (scoresData) scores = scoresData.map(s => ({ name: s.username, score: s.score, total: 20, timeElapsed: s.time_taken, timestamp: s.created_at }));
+            if (!supabase) return;
+            try {
+                const { data: scoresData, error: e1 } = await supabase.from('scores').select('*').order('score', { ascending: false }).limit(100);
+                if (!e1 && scoresData) scores = scoresData.map(s => ({ name: s.username, score: s.score, total: 20, timeElapsed: s.time_taken, timestamp: s.created_at }));
 
-        const { data: questionsData } = await supabase.from('questions').select('*');
-        if (questionsData) customQuestions = questionsData.map(q => ({ id: q.id, category: 'Custom', question: q.question, options: [q.option_a, q.option_b, q.option_c, q.option_d], correct: ['a','b','c','d'].indexOf(q.correct_answer) }));
+                const { data: questionsData, error: e2 } = await supabase.from('questions').select('*');
+                if (!e2 && questionsData) customQuestions = questionsData.map(q => ({ id: q.id, category: 'Custom', question: q.question, options: [q.option_a, q.option_b, q.option_c, q.option_d], correct: ['a','b','c','d'].indexOf(q.correct_answer) }));
 
-        const { data: usersData } = await supabase.from('users').select('username');
-        if (usersData) registeredUsers = usersData.map(u => u.username.toLowerCase());
+                const { data: usersData, error: e3 } = await supabase.from('users').select('username');
+                if (!e3 && usersData) registeredUsers = usersData.map(u => u.username.toLowerCase());
 
-        const { data: adminsData } = await supabase.from('admins').select('username');
-        if (adminsData) adminUsers = adminsData.map(a => a.username);
-    } catch (e) {
-        console.log('Supabase load failed, using local fallback');
-    }
-}
+                const { data: adminsData, error: e4 } = await supabase.from('admins').select('username');
+                if (!e4 && adminsData) adminUsers = adminsData.map(a => a.username);
+
+                console.log('DB loaded: scores=' + scores.length + ' users=' + registeredUsers.length);
+            } catch (e) {
+                console.log('Supabase load failed, using local fallback:', e);
+            }
+        }
         
 
         function loadLocalData() {
@@ -1143,14 +1171,15 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY)
             }
         }
 
-    async function saveData() {
-    try {
-        if (currentPlayer) setCookie('raikuPlayerName', currentPlayer, 30);
-        localStorage.setItem('raikuScores', JSON.stringify(scores)); // local backup
-    } catch (e) {
-        console.error('Save failed:', e);
-    }
-}
+        async function saveData() {
+            try {
+                if (currentPlayer) setCookie('raikuPlayerName', currentPlayer, 30);
+                localStorage.setItem('raikuScores', JSON.stringify(scores));
+                localStorage.setItem('raikuRegisteredUsers', JSON.stringify(registeredUsers));
+            } catch (e) {
+                console.error('Save failed:', e);
+            }
+        }
 
         // Get all available questions
         function getAllQuestions() {
@@ -1223,28 +1252,22 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY)
                     return;
                 }
 
-                // Try to save to database but don't block on it
-                try {
+                if (supabase) {
                     const { error } = await supabase.from('users').insert({ username: inputName });
                     if (error) {
-                        console.log('Database insert failed, continuing with local mode');
+                        showNotification('This name already exists, choose a new name dragon! 🐉', 'error');
+                        return;
                     }
-                } catch (err) {
-                    console.log('Database error, continuing with local mode:', err);
                 }
-                
-                // Add to local registry regardless of database
+                currentPlayer = inputName;
                 registeredUsers.push(inputName.toLowerCase());
-                currentPlayer = inputName;
-            } else if (currentPlayer) {
-                // User already has a name saved
-            } else {
-                currentPlayer = inputName;
+                setCookie('raikuPlayerName', inputName, 30);
+                showNotification('Welcome to the Raiku family, ' + inputName + '! 🐉', 'success');
             }
 
             quizQuestions = selectQuizQuestions();
             currentQuestionIndex = 0;
-            userAnswers = new Array(20).fill(null);
+            userAnswers = new Array(quizQuestions.length).fill(null);
 
             document.querySelector('.welcome-screen').classList.remove('active');
             document.querySelector('.quiz-screen').classList.add('active');
@@ -1279,7 +1302,7 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY)
             });
 
             document.getElementById('prevBtn').disabled = currentQuestionIndex === 0;
-            document.getElementById('nextBtn').textContent = currentQuestionIndex === 19 ? 'Finish' : 'Next';
+            const nb = document.getElementById('nextBtn'); nb.textContent = currentQuestionIndex === quizQuestions.length - 1 ? 'Finish ✓' : 'Next'; nb.style.background = currentQuestionIndex === quizQuestions.length - 1 ? '#ff6b35' : '';
         }
 
         function selectOption(optionIndex) {
@@ -1353,12 +1376,10 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY)
             }
 
             await saveData();
-            
-            // Try to save to database but don't block
-            try {
-                await supabase.from('scores').insert({ username: currentPlayer, score: correctAnswers, time_taken: timeElapsed });
-            } catch (err) {
-                console.log('Database save failed, score saved locally:', err);
+            if (supabase) {
+                const { error: scoreErr } = await supabase.from('scores').insert({ username: currentPlayer, score: correctAnswers, time_taken: timeElapsed });
+                if (scoreErr) console.error('Score insert error:', scoreErr);
+                else console.log('Score saved to DB');
             }
 
             // Display results

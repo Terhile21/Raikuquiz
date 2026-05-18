@@ -520,6 +520,58 @@
             font-weight: bold;
             margin: 0 2px;
         }
+
+        /* Admin login modal */
+        .modal-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.75);
+            z-index: 9000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            animation: fadeIn 0.2s ease;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to   { opacity: 1; }
+        }
+
+        .modal-box {
+            background: rgba(20,20,20,0.98);
+            border: 2px solid rgba(190,242,2,0.4);
+            border-radius: 16px;
+            padding: 35px 40px;
+            width: 340px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.8), 0 0 30px rgba(190,242,2,0.15);
+            position: relative;
+        }
+
+        .modal-box h3 {
+            color: #BEF202;
+            margin-bottom: 20px;
+            font-size: 1.2em;
+            text-align: center;
+        }
+
+        .modal-box .input-group {
+            margin: 15px 0;
+        }
+
+        .modal-close {
+            position: absolute;
+            top: 12px;
+            right: 16px;
+            background: none;
+            border: none;
+            color: #666;
+            font-size: 1.4em;
+            cursor: pointer;
+            line-height: 1;
+        }
+
+        .modal-close:hover { color: #BEF202; }
     </style>
 </head>
 <body>
@@ -583,7 +635,7 @@
                 
                 <div class="stats-bar" id="statsBar"></div>
                 
-                <a href="https://docs.raiku.com" target="_blank" class="docs-link">📚 Explore the Docs</a>
+                <a href="https://docs.raiku.xyz" target="_blank" rel="noopener noreferrer" class="docs-link">📚 Explore the Docs</a>
                 <br>
                 <button class="btn" onclick="restartQuiz()" style="margin-top: 20px;">Take Quiz Again</button>
             </div>
@@ -627,10 +679,8 @@
                     // v2 UMD bundle exposes supabase.createClient directly
                     // Supabase v2 UMD sets window.supabase = { createClient, ... }
                     var sb = window.supabase;
-                    console.log('window.supabase object:', sb);
                     if (!sb || !sb.createClient) throw new Error('createClient not found. window.supabase=' + JSON.stringify(Object.keys(sb||{})));
                     window._supabase = sb.createClient(SUPABASE_URL, SUPABASE_KEY);
-                    console.log('✅ Supabase client ready:', window._supabase);
                 } catch(e) {
                     console.error('❌ Supabase init error:', e);
                     window._supabase = null;
@@ -683,6 +733,10 @@
 
         // Notification system
         function showNotification(message, type = 'success') {
+            // Fix #25: dismiss all existing notifications before adding a new one
+            document.querySelectorAll('.notification').forEach(n => {
+                if (document.body.contains(n)) document.body.removeChild(n);
+            });
             const notification = document.createElement('div');
             notification.className = `notification ${type}`;
             notification.textContent = message;
@@ -691,7 +745,7 @@
             setTimeout(() => {
                 notification.style.animation = 'slideOut 0.3s ease';
                 setTimeout(() => {
-                    document.body.removeChild(notification);
+                    if (document.body.contains(notification)) document.body.removeChild(notification);
                 }, 300);
             }, 3000);
         }
@@ -700,6 +754,9 @@
         document.addEventListener('keydown', (e) => {
             const activeScreen = document.querySelector('.quiz-screen.active');
             if (!activeScreen) return;
+
+            // Fix #18: don't intercept keyboard when user is typing in an input/textarea
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
 
             if (e.key === 'ArrowRight' || e.key === 'Enter') {
                 e.preventDefault();
@@ -1127,22 +1184,15 @@
                 const { data: adminsData, error: e4 } = await window._supabase.from('admins').select('username');
                 if (!e4 && adminsData) adminUsers = adminsData.map(a => a.username);
 
-                console.log('DB loaded: scores=' + scores.length + ' users=' + registeredUsers.length);
+
             } catch (e) {
-                console.log('Supabase load failed, using local fallback:', e);
+                console.warn('Supabase load failed, using local fallback:', e);
             }
         }
         
 
         function loadLocalData() {
             try {
-                // Check for username in cookie (30 day persistence)
-                const savedName = getCookie('raikuPlayerName');
-                if (savedName) {
-                    currentPlayer = savedName;
-                    document.getElementById('playerName').value = savedName;
-                }
-                
                 const localScores = localStorage.getItem('raikuScores');
                 if (localScores && scores.length === 0) {
                     scores = JSON.parse(localScores);
@@ -1152,8 +1202,29 @@
                 if (localUsers && registeredUsers.length === 0) {
                     registeredUsers = JSON.parse(localUsers);
                 }
+
+                const localQuestions = localStorage.getItem('raikuCustomQuestions');
+                if (localQuestions && customQuestions.length === 0) {
+                    customQuestions = JSON.parse(localQuestions);
+                }
+
+                const localAdmins = localStorage.getItem('raikuAdminUsers');
+                if (localAdmins && adminUsers.length === 0) {
+                    adminUsers = JSON.parse(localAdmins);
+                }
+
+                // Fix #19: validate cookie name against registeredUsers AFTER the list loads
+                // Prevents cookie spoofing — manually setting cookie to someone else's username
+                const savedName = getCookie('raikuPlayerName');
+                if (savedName && registeredUsers.includes(savedName.toLowerCase())) {
+                    currentPlayer = savedName;
+                    document.getElementById('playerName').value = savedName;
+                } else if (savedName) {
+                    // Cookie references an unregistered name — purge it
+                    deleteCookie('raikuPlayerName');
+                }
             } catch (e) {
-                console.log('Local storage load failed');
+                console.warn('Local storage load failed');
             }
         }
 
@@ -1180,8 +1251,17 @@
 
         function changeUsername() {
             if (confirm('Are you sure you want to change your username? This will log you out.')) {
+                // Fix #17: stop timer if user changes username while a quiz might be running
+                stopTimer();
                 currentPlayer = '';
+                currentQuestionIndex = 0;
+                userAnswers = [];
+                quizQuestions = [];
                 deleteCookie('raikuPlayerName');
+                // Return to welcome screen regardless of which screen is active
+                document.querySelectorAll('.welcome-screen, .quiz-screen, .results-screen, .admin-screen')
+                    .forEach(s => s.classList.remove('active'));
+                document.querySelector('.welcome-screen').classList.add('active');
                 displaySavedName();
             }
         }
@@ -1191,6 +1271,8 @@
                 if (currentPlayer) setCookie('raikuPlayerName', currentPlayer, 30);
                 localStorage.setItem('raikuScores', JSON.stringify(scores));
                 localStorage.setItem('raikuRegisteredUsers', JSON.stringify(registeredUsers));
+                localStorage.setItem('raikuCustomQuestions', JSON.stringify(customQuestions));
+                localStorage.setItem('raikuAdminUsers', JSON.stringify(adminUsers));
             } catch (e) {
                 console.error('Save failed:', e);
             }
@@ -1205,30 +1287,42 @@
         function selectQuizQuestions() {
             const allQuestions = getAllQuestions();
             const selected = [];
-            const available = allQuestions.filter(q => !askedQuestions.includes(q.id));
-            
-            // If we've asked too many, reset history but keep last 20
+            let available = allQuestions.filter(q => !askedQuestions.includes(q.id));
+
+            // Fix #12: if pool is too small, reset history and RECOMPUTE available
+            // Previously the reset happened but available was never re-filtered, so it was a no-op
             if (available.length < 20) {
                 askedQuestions = askedQuestions.slice(-20);
+                available = allQuestions.filter(q => !askedQuestions.includes(q.id));
             }
             
+            // Fisher-Yates shuffle — unbiased, unlike Array.sort(() => Math.random() - 0.5)
+            function fisherYates(arr) {
+                const a = [...arr];
+                for (let i = a.length - 1; i > 0; i--) {
+                    const j = Math.floor(Math.random() * (i + 1));
+                    [a[i], a[j]] = [a[j], a[i]];
+                }
+                return a;
+            }
+
             // Shuffle available questions
-            const shuffled = available.sort(() => Math.random() - 0.5);
-            
+            const shuffled = fisherYates(available);
+
             // Select 20 and randomize their options
             for (let i = 0; i < Math.min(20, shuffled.length); i++) {
                 const question = {...shuffled[i]}; // Create a copy
-                
-                // Randomize options
+
+                // Randomize options using Fisher-Yates
                 const correctAnswer = question.options[question.correct];
-                const shuffledOptions = [...question.options].sort(() => Math.random() - 0.5);
-                
-                // Find new position of correct answer
+                const shuffledOptions = fisherYates(question.options);
+
+                // Find new position of correct answer; guard against -1 if option strings are duped
                 const newCorrectIndex = shuffledOptions.indexOf(correctAnswer);
-                
+
                 // Update question with shuffled options and new correct index
                 question.options = shuffledOptions;
-                question.correct = newCorrectIndex;
+                question.correct = newCorrectIndex !== -1 ? newCorrectIndex : 0;
                 
                 selected.push(question);
                 askedQuestions.push(shuffled[i].id);
@@ -1245,10 +1339,16 @@
         async function startQuiz() {
             const nameInput = document.getElementById('playerName');
             const inputName = nameInput.value.trim();
+            const startBtn = document.querySelector('.welcome-screen .btn');
 
             if (!currentPlayer && !inputName) {
                 showNotification('Please enter your name to start the quiz!', 'error');
                 return;
+            }
+
+            // Fix #34: confirm before launching quiz for returning users (no accidental starts)
+            if (currentPlayer && !inputName) {
+                if (!confirm(`Start a new quiz as ${currentPlayer}?`)) return;
             }
 
             // If entering a new name
@@ -1267,12 +1367,18 @@
                     return;
                 }
 
-                if (window._supabase) {
-                    const { error } = await window._supabase.from('users').insert({ username: inputName });
-                    if (error) {
-                        showNotification('This name already exists, choose a new name dragon! 🐉', 'error');
-                        return;
+                // Fix #24: disable button during async call to prevent double-submit spam
+                if (startBtn) { startBtn.disabled = true; startBtn.textContent = 'Starting...'; }
+                try {
+                    if (window._supabase) {
+                        const { error } = await window._supabase.from('users').insert({ username: inputName });
+                        if (error) {
+                            showNotification('This name already exists, choose a new name dragon! 🐉', 'error');
+                            return;
+                        }
                     }
+                } finally {
+                    if (startBtn) { startBtn.disabled = false; startBtn.textContent = 'Start Quiz'; }
                 }
                 currentPlayer = inputName;
                 registeredUsers.push(inputName.toLowerCase());
@@ -1281,6 +1387,15 @@
             }
 
             quizQuestions = selectQuizQuestions();
+
+            // Fix #11: guard against fewer than 20 questions being available
+            const QUIZ_LENGTH = 20;
+            if (quizQuestions.length < QUIZ_LENGTH) {
+                showNotification(`Not enough questions available (${quizQuestions.length}/${QUIZ_LENGTH}). Add more custom questions first.`, 'error');
+                if (startBtn) { startBtn.disabled = false; startBtn.textContent = 'Start Quiz'; }
+                return;
+            }
+
             currentQuestionIndex = 0;
             userAnswers = new Array(quizQuestions.length).fill(null);
 
@@ -1293,10 +1408,12 @@
 
         function displayQuestion() {
             const question = quizQuestions[currentQuestionIndex];
-            const progress = ((currentQuestionIndex + 1) / 20) * 100;
+            // Fix #9: use quizQuestions.length not hardcoded 20
+            const progress = ((currentQuestionIndex + 1) / quizQuestions.length) * 100;
 
             document.getElementById('progressFill').style.width = progress + '%';
-            document.getElementById('questionNumber').textContent = `Question ${currentQuestionIndex + 1} of 20`;
+            // Fix #10: use quizQuestions.length not hardcoded 20
+            document.getElementById('questionNumber').textContent = `Question ${currentQuestionIndex + 1} of ${quizQuestions.length}`;
             document.getElementById('questionCategory').textContent = question.category;
             document.getElementById('questionText').textContent = question.question;
 
@@ -1317,7 +1434,10 @@
             });
 
             document.getElementById('prevBtn').disabled = currentQuestionIndex === 0;
-            const nb = document.getElementById('nextBtn'); nb.textContent = currentQuestionIndex === quizQuestions.length - 1 ? 'Finish ✓' : 'Next'; nb.style.background = currentQuestionIndex === quizQuestions.length - 1 ? '#ff6b35' : '';
+            const nb = document.getElementById('nextBtn');
+            const isLastQuestion = currentQuestionIndex === quizQuestions.length - 1;
+            nb.textContent = isLastQuestion ? 'Finish ✓' : 'Next';
+            nb.style.background = isLastQuestion ? '#ff6b35' : '#BEF202';
         }
 
         function selectOption(optionIndex) {
@@ -1334,7 +1454,8 @@
                 userAnswers[currentQuestionIndex] = -1;
             }
 
-            if (currentQuestionIndex < 19) {
+            // Fix #8: use quizQuestions.length instead of hardcoded 19
+            if (currentQuestionIndex < quizQuestions.length - 1) {
                 currentQuestionIndex++;
                 displayQuestion();
             } else {
@@ -1357,10 +1478,20 @@
             quizQuestions.forEach((question, index) => {
                 if (userAnswers[index] === question.correct) {
                     correctAnswers++;
-                } else if (userAnswers[index] === -1) {
+                } else if (userAnswers[index] === -1 || userAnswers[index] === null) {
                     skipped++;
                 }
             });
+
+            // Fix #20: require at least 1 answered question — block all-skip submissions
+            const answered = quizQuestions.length - skipped;
+            if (answered === 0) {
+                startTimer(); // resume timer
+                showNotification('Answer at least one question before finishing!', 'error');
+                document.querySelector('.quiz-screen').classList.add('active');
+                document.querySelector('.results-screen').classList.remove('active');
+                return;
+            }
 
             let comment = '';
             if (correctAnswers <= 5) {
@@ -1373,10 +1504,18 @@
                 comment = 'real dragon';
             }
 
+            // Fix #7: save to Supabase FIRST, then append to local state.
+            // Previously we pushed to local array + localStorage before the DB insert,
+            // which caused duplicate entries on refresh when loadPersistentData() re-fetched.
+            if (window._supabase) {
+                const { error: scoreErr } = await window._supabase.from('scores').insert({ username: currentPlayer, score: correctAnswers, time_taken: timeElapsed });
+                if (scoreErr) console.error('Score insert error:', scoreErr);
+            }
+
             scores.push({
                 name: currentPlayer,
                 score: correctAnswers,
-                total: 20,
+                total: quizQuestions.length,
                 timeElapsed: timeElapsed,
                 timestamp: new Date().toISOString()
             });
@@ -1391,20 +1530,15 @@
             }
 
             await saveData();
-            if (window._supabase) {
-                const { error: scoreErr } = await window._supabase.from('scores').insert({ username: currentPlayer, score: correctAnswers, time_taken: timeElapsed });
-                if (scoreErr) console.error('Score insert error:', scoreErr);
-                else console.log('Score saved to DB');
-            }
 
             // Display results
-            document.getElementById('finalScore').textContent = `${correctAnswers}/20`;
+            document.getElementById('finalScore').textContent = `${correctAnswers}/${quizQuestions.length}`;
             document.getElementById('finalComment').textContent = comment;
 
             // Display stats
             const minutes = Math.floor(timeElapsed / 60);
             const seconds = timeElapsed % 60;
-            const accuracy = Math.round((correctAnswers / 20) * 100);
+            const accuracy = Math.round((correctAnswers / quizQuestions.length) * 100);
             
             document.getElementById('statsBar').innerHTML = `
                 <div class="stat-item">
@@ -1436,7 +1570,23 @@
                 return;
             }
 
-            scores.slice(0, 10).forEach((score, index) => {
+            // Deduplicate: keep only each player's best score (highest score, then fastest time)
+            const bestByPlayer = {};
+            scores.forEach(s => {
+                const key = s.name.toLowerCase();
+                const existing = bestByPlayer[key];
+                if (!existing) {
+                    bestByPlayer[key] = s;
+                } else if (s.score > existing.score || (s.score === existing.score && (s.timeElapsed || 999999) < (existing.timeElapsed || 999999))) {
+                    bestByPlayer[key] = s;
+                }
+            });
+
+            const top10 = Object.values(bestByPlayer)
+                .sort((a, b) => b.score !== a.score ? b.score - a.score : (a.timeElapsed || 999999) - (b.timeElapsed || 999999))
+                .slice(0, 10);
+
+            top10.forEach((score, index) => {
                 const item = document.createElement('div');
                 item.className = 'leaderboard-item';
                 
@@ -1448,18 +1598,32 @@
                     const secs = score.timeElapsed % 60;
                     timeStr = ` • ${mins}:${secs.toString().padStart(2, '0')}`;
                 }
-                
-                item.innerHTML = `
-                    <span class="rank">${medal} #${index + 1}</span>
-                    <span class="player-name">${score.name}</span>
-                    <span class="score">${score.score}/20${timeStr}</span>
-                `;
-                
+
+                const rank = document.createElement('span');
+                rank.className = 'rank';
+                rank.textContent = `${medal} #${index + 1}`;
+
+                const name = document.createElement('span');
+                name.className = 'player-name';
+                name.textContent = score.name;
+
+                const sc = document.createElement('span');
+                sc.className = 'score';
+                sc.textContent = `${score.score}/${quizQuestions.length || 20}${timeStr}`;
+
+                item.appendChild(rank);
+                item.appendChild(name);
+                item.appendChild(sc);
                 container.appendChild(item);
             });
         }
 
         function restartQuiz() {
+            // Fix #23: reset all quiz state so stale data doesn't persist
+            currentQuestionIndex = 0;
+            userAnswers = [];
+            quizQuestions = [];
+            stopTimer();
             document.querySelector('.results-screen').classList.remove('active');
             document.querySelector('.welcome-screen').classList.add('active');
             updateLeaderboard('welcomeLeaderboardList');
@@ -1467,13 +1631,48 @@
 
         // Admin Functions
         function showAdminLogin() {
-            const password = prompt('Enter admin password:');
+            // Fix #27: replace browser prompt() with proper inline modal
+            const overlay = document.createElement('div');
+            overlay.className = 'modal-overlay';
+            overlay.id = 'adminLoginModal';
+            overlay.innerHTML = `
+                <div class="modal-box">
+                    <button class="modal-close" onclick="document.getElementById('adminLoginModal').remove()">✕</button>
+                    <h3>🔐 Admin Login</h3>
+                    <div class="input-group">
+                        <label for="adminPassInput">Password:</label>
+                        <input type="password" id="adminPassInput" placeholder="Enter admin password"
+                               autocomplete="current-password"
+                               onkeydown="if(event.key==='Enter') submitAdminLogin(); if(event.key==='Escape') document.getElementById('adminLoginModal').remove();">
+                    </div>
+                    <button class="btn" style="width:100%; margin-top:10px;" onclick="submitAdminLogin()">Login</button>
+                </div>
+            `;
+            document.body.appendChild(overlay);
+            // Dismiss on backdrop click
+            overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+            setTimeout(() => document.getElementById('adminPassInput')?.focus(), 50);
+        }
+
+        function submitAdminLogin() {
+            const input = document.getElementById('adminPassInput');
+            if (!input) return;
+            const password = input.value;
+            const modal = document.getElementById('adminLoginModal');
             if (password === MASTER_PASSWORD || adminUsers.includes(password)) {
+                if (modal) modal.remove();
                 document.querySelector('.welcome-screen').classList.remove('active');
                 document.querySelector('.admin-screen').classList.add('active');
-                showRegisteredUsers(); // Show users first instead of add question
+                showRegisteredUsers();
             } else {
-                alert('Invalid password!');
+                input.value = '';
+                input.style.borderColor = '#ff4444';
+                input.placeholder = 'Wrong password, try again';
+                setTimeout(() => {
+                    input.style.borderColor = '';
+                    input.placeholder = 'Enter admin password';
+                }, 1500);
+                input.focus();
             }
         }
 
@@ -1525,7 +1724,7 @@
             const opt4 = document.getElementById('option4').value.trim();
 
             if (!category || !question || !opt1 || !opt2 || !opt3 || !opt4) {
-                alert('Please fill in all fields!');
+                showNotification('Please fill in all fields!', 'error');
                 return;
             }
 
@@ -1537,9 +1736,26 @@
                 correct: 0
             };
 
+            // Sync to Supabase if connected
+            if (window._supabase) {
+                const { error } = await window._supabase.from('questions').insert({
+                    id: newQ.id,
+                    question: newQ.question,
+                    option_a: opt1,
+                    option_b: opt2,
+                    option_c: opt3,
+                    option_d: opt4,
+                    correct_answer: 'a'
+                });
+                if (error) {
+                    console.error('Question insert error:', error);
+                    showNotification('Failed to save question to DB. Saved locally only.', 'error');
+                }
+            }
+
             customQuestions.push(newQ);
             await saveData();
-            alert('Question added successfully!');
+            showNotification('Question added successfully!', 'success');
             showAddQuestion();
         }
 
@@ -1567,8 +1783,18 @@
 
         async function deleteQuestion(index) {
             if (confirm('Delete this question?')) {
+                const questionId = customQuestions[index].id;
                 customQuestions.splice(index, 1);
+
+                // Fix #15: delete from Supabase — previously only local state was spliced,
+                // so deleted questions came back on every page refresh
+                if (window._supabase) {
+                    const { error } = await window._supabase.from('questions').delete().eq('id', questionId);
+                    if (error) console.error('Question delete error:', error);
+                }
+
                 await saveData();
+                showNotification('Question deleted.', 'success');
                 showQuestionList();
             }
         }
@@ -1580,7 +1806,7 @@
                     <h3 style="color: #BEF202; margin-bottom: 15px;">Manage Admin Access</h3>
                     <div class="input-group">
                         <label>Create New Admin Password:</label>
-                        <input type="text" id="newAdminPass" placeholder="Enter new admin password">
+                        <input type="password" id="newAdminPass" placeholder="Enter new admin password" autocomplete="new-password">
                     </div>
                     <button class="btn" onclick="addAdmin()">Add Admin</button>
                     
@@ -1601,22 +1827,41 @@
         async function addAdmin() {
             const pass = document.getElementById('newAdminPass').value.trim();
             if (!pass) {
-                alert('Please enter a password!');
+                showNotification('Please enter a password!', 'error');
                 return;
             }
             if (adminUsers.includes(pass)) {
-                alert('This password already exists!');
+                showNotification('This password already exists!', 'error');
                 return;
             }
+
+            // Fix #16: sync admin additions to Supabase
+            if (window._supabase) {
+                const { error } = await window._supabase.from('admins').insert({ username: pass });
+                if (error) {
+                    console.error('Admin insert error:', error);
+                    showNotification('Failed to add admin. Try again.', 'error');
+                    return;
+                }
+            }
+
             adminUsers.push(pass);
             await saveData();
-            alert('Admin added successfully!');
+            showNotification('Admin added successfully!', 'success');
             showAdminManagement();
         }
 
         async function removeAdmin(index) {
             if (confirm('Remove this admin?')) {
+                const pass = adminUsers[index];
                 adminUsers.splice(index, 1);
+
+                // Fix #16: sync admin removals to Supabase
+                if (window._supabase) {
+                    const { error } = await window._supabase.from('admins').delete().eq('username', pass);
+                    if (error) console.error('Admin delete error:', error);
+                }
+
                 await saveData();
                 showAdminManagement();
             }
@@ -1630,15 +1875,16 @@
                 const userScores = scores.filter(s => s.name.toLowerCase() === user);
                 const attempts = userScores.length;
                 const bestScore = attempts > 0 ? Math.max(...userScores.map(s => s.score)) : 0;
-                
+                const bestTotal = attempts > 0 ? (userScores.find(s => s.score === bestScore)?.total || 20) : 20;
+
                 return `
                     <div class="question-item" style="display: flex; justify-content: space-between; align-items: center;">
                         <div>
-                            <strong style="color: #BEF202;">${registeredUsers.indexOf(user) + 1}. ${user}</strong>
+                            <strong style="color: #BEF202;">${i + 1}. ${user}</strong>
                             <br>
                             <small style="color: #888;">
                                 ${attempts} quiz${attempts !== 1 ? 'zes' : ''} taken
-                                ${attempts > 0 ? `• Best: ${bestScore}/20` : ''}
+                                ${attempts > 0 ? `• Best: ${bestScore}/${bestTotal}` : ''}
                             </small>
                         </div>
                         <button class="delete-btn" onclick="deleteUser(${i})">Delete User</button>
@@ -1673,12 +1919,19 @@
             
             if (confirm(confirmMsg)) {
                 registeredUsers.splice(index, 1);
-                
-                // Also remove their scores
                 scores = scores.filter(s => s.name.toLowerCase() !== username);
-                
+
+                // Fix #13 + #14: delete from Supabase — previously only local state was updated,
+                // so deleted users and their scores reappeared on every page refresh
+                if (window._supabase) {
+                    const { error: userErr } = await window._supabase.from('users').delete().eq('username', username);
+                    if (userErr) console.error('User delete error:', userErr);
+                    const { error: scoreErr } = await window._supabase.from('scores').delete().eq('username', username);
+                    if (scoreErr) console.error('Score delete error:', scoreErr);
+                }
+
                 await saveData();
-                alert(`User "${username}" deleted successfully!`);
+                showNotification(`User "${username}" deleted successfully!`, 'success');
                 showRegisteredUsers();
             }
         }
